@@ -1,72 +1,96 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
+#include <math.h>
 
-#define MAGNETOMETER_ADDRESS 0x1E
-#define ACCELEROMETER_ADDRESS 0x19
+// Define the I2C pins (GP0 and GP8 on a Raspberry Pi Pico)
+#define SDA_PIN 0
+#define SCL_PIN 1
+#define GY_511_ADDRESS 0x1E // Default address for GY-511 magnetometer module
 
-uint8_t config[2] = {0x20, 0x27};
-uint8_t config_accel[2] = {0x23, 0x00};
-uint8_t config_magneto[2] = {0x02, 0x00};
-uint8_t config_cra[2] = {0x00, 0x10};
-uint8_t config_crb[2] = {0x01, 0x20};
+// Register addresses for MPU6050
+#define ACC_CTRL_REG1_A 0x19
+#define ACCEL_XOUT_H 0x29
+#define ACCEL_XOUT_L 0x28
+#define ACCEL_YOUT_H 0x2B
+#define ACCEL_YOUT_L 0x2A
+#define ACCEL_ZOUT_H 0x2D
+#define ACCEL_ZOUT_L 0x2C
+
+
+#define MAG_XOUT_H 0x03
+#define MAG_XOUT_L 0x04
+#define MAG_YOUT_H 0x05
+#define MAG_YOUT_L 0x06
+#define MAG_ZOUT_H 0x07
+#define MAG_ZOUT_L 0x08
+#define I2C_ADDRESS 0x1E
+#define I2C_ADDRESS_ACCEL 0x68
+#define I2C_ADDRESS_MAG 0x3C
+
+int16_t read_accel(int16_t *data, uint8_t reg) {
+  uint8_t buffer[2];
+
+  i2c_write_blocking(i2c0, 0x19, &reg, 1, true);
+  i2c_read_blocking(i2c0, 0x19, buffer, 2, false);
+
+  *data = (int16_t)((buffer[1] << 8) | buffer[0]);
+
+  return 0;
+}
+
+float calculate_heading(int16_t mag_x, int16_t mag_y) {
+  float heading = atan2(mag_y, mag_x) * 180.0 / M_PI;
+  if (heading < 0) {
+    heading += 360.0;
+  }
+  return heading;
+}
+
+int16_t read_mag(int16_t *data, uint8_t reg) {
+    uint8_t buffer[2];
+    i2c_write_blocking(i2c0, I2C_ADDRESS, &reg, 1, true);
+    i2c_read_blocking(i2c0, I2C_ADDRESS, buffer, 2, false);
+    *data = (int16_t)((buffer[1] << 8) | buffer[0]);
+    return 0;
+}
 
 int main() {
-    stdio_init_all();
+  stdio_init_all();
+  i2c_init(i2c0, 115200); // Initialize I2C at 100kHz
+  gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+  gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+  i2c_set_baudrate(i2c0, 115200);
 
-    i2c_init(i2c0, 400000); // 400 kHz
-    gpio_set_function(0, GPIO_FUNC_I2C);
-    gpio_set_function(1, GPIO_FUNC_I2C);
-    gpio_pull_up(0);
-    gpio_pull_up(1);
-    while (1) {
+  // Enable continuous measurement mode for the accelerometer
+  uint8_t accelerometer_config_data[] = {0x20, 0x27};
+  i2c_write_blocking(i2c0, 0x19, accelerometer_config_data, sizeof(accelerometer_config_data), false);
 
-        // Write magnetometer configuration
-        i2c_write_blocking(i2c0, MAGNETOMETER_ADDRESS, config_magneto, 2, false);
-        i2c_write_blocking(i2c0, MAGNETOMETER_ADDRESS, config_cra, 2, false);
-        i2c_write_blocking(i2c0, MAGNETOMETER_ADDRESS, config_crb, 2, false);
-        sleep_ms(10); // Waiting for magnetometer data
+  // Data to configure the GY-511 module for continuous measurement
+  uint8_t magnetometer_config_data[] = {0x02, 0x00};
+  i2c_write_blocking(i2c0, GY_511_ADDRESS, magnetometer_config_data, sizeof(magnetometer_config_data), false);
 
-        // Read magnetometer data
-        uint8_t mag_data = 0x03; // X-axis msb data register
-        i2c_write_blocking(i2c0, MAGNETOMETER_ADDRESS, &mag_data, 1, true);
-        uint8_t magdata[6] = {0};
-        i2c_read_blocking(i2c0, MAGNETOMETER_ADDRESS, magdata, 6, false);
+  int16_t accel_x, accel_y, accel_z;
+  int16_t mag_x, mag_y, mag_z;
 
-        int16_t magX = (magdata[0] << 8) | magdata[1];
-        if (magX > 32767) {magX -= 65536;}
+  while (1) {
+    read_accel(&accel_x, ACCEL_XOUT_H);
+    read_accel(&accel_y, ACCEL_YOUT_H);
+    read_accel(&accel_z, ACCEL_ZOUT_H);
 
-        int16_t magY = (magdata[2] << 8) | magdata[3];
-        if (magY > 32767) {magY -= 65536;}
+    read_mag(&mag_x, MAG_XOUT_L);
+    read_mag(&mag_y, MAG_YOUT_L);
+    read_mag(&mag_z, MAG_ZOUT_L);
 
-        int16_t magZ = (magdata[2] << 8) | magdata[3];
-        if (magZ > 32767) {magZ -= 65536;}
+    printf("Accel: X=%-8d, Y=%-8d, Z=%-8d\t", accel_x, accel_y, accel_z);
+    // printf("Magnetometer: X=%-8d, Y=%-8d, Z=%-8d\n", mag_x, mag_y, mag_z);
+    float heading = calculate_heading(mag_x, mag_y);
 
-        // Write accelerometer configuration
-        i2c_write_blocking(i2c0, ACCELEROMETER_ADDRESS, config, 2, false);
-        i2c_write_blocking(i2c0, ACCELEROMETER_ADDRESS, config_accel, 2, false);
-        sleep_ms(10); // Waiting for accelerometer data
+    printf("Magnetometer - X: %d uT, Y: %d uT, Z: %d uT, Heading: %.2f°\n", mag_x, mag_y, mag_z, heading);
 
-        // Read accelerometer data
-        uint8_t reg_accel = 0x28; // X-axis lsb data register
-        i2c_write_blocking(i2c0, ACCELEROMETER_ADDRESS, &reg_accel, 1, true);
-        uint8_t acceldata[6] = {0};
-        i2c_read_blocking(i2c0, ACCELEROMETER_ADDRESS, acceldata, 6, false);
+    // Add a delay or sleep if necessary
+    sleep_ms(500); // Sleep for 1 second before the next reading
+  }
 
-        int16_t accelX = (acceldata[0] << 8) | acceldata[1];
-        if (accelX > 32767) {accelX -= 65536;}
-
-        int16_t accelY = (acceldata[2] << 8) | acceldata[3];
-        if (accelY > 32767) {accelY -= 65536;}
-
-        int16_t accelZ = (acceldata[2] << 8) | acceldata[3];
-        if (accelZ > 32767) {accelZ -= 65536;}
-
-        printf("Accel: X=%d, Y=%d, Z=%d", accelX, accelY, accelZ);
-        printf("Magnetometer Data - X: %d, Y: %d, Z: %d\n", magX, magY, magZ);
-
-        sleep_ms(200); // Sleep for 100ms (adjust as needed).
-    }
-    return 0;
+  return 0;
 }
